@@ -1,9 +1,11 @@
 package endpoint
 
 import (
+	"github.com/AlanMute/university-accounting/internal/accounting"
 	"github.com/AlanMute/university-accounting/pkg/cast"
 	"github.com/sirupsen/logrus"
 	"github.com/valyala/fasthttp"
+	"time"
 )
 
 func init() {
@@ -22,17 +24,24 @@ var routingMap = map[string]route{
 	"/status": {handler: func(ctx *fasthttp.RequestCtx, h *HttpHandler) {
 		_, _ = ctx.WriteString("OK")
 	}},
+
+	"/api/v1/attendance-report": {handler: func(ctx *fasthttp.RequestCtx, h *HttpHandler) { //Lab1
+		if cast.ByteArrayToString(ctx.Method()) == fasthttp.MethodGet {
+			h.generateAttendanceReport(ctx)
+		} else {
+			ctx.SetStatusCode(fasthttp.StatusMethodNotAllowed)
+		}
+	}},
 }
 
 type HttpHandler struct {
-	metricsHandler fasthttp.RequestHandler
-
-	swaggerHandler fasthttp.RequestHandler
-	fsHandler      fasthttp.RequestHandler
+	accountingClient *accounting.Client
 }
 
-func NewHttpHandlerChips() *HttpHandler {
-	h := &HttpHandler{}
+func NewHttpHandler(accountingClient *accounting.Client) *HttpHandler {
+	h := &HttpHandler{
+		accountingClient: accountingClient,
+	}
 
 	return h
 }
@@ -51,4 +60,48 @@ func (h *HttpHandler) Handle(ctx *fasthttp.RequestCtx) {
 	} else {
 		ctx.SetStatusCode(fasthttp.StatusNotFound)
 	}
+}
+
+func (h *HttpHandler) generateAttendanceReport(ctx *fasthttp.RequestCtx) {
+	termByte := ctx.QueryArgs().Peek("term")
+	if termByte == nil {
+		writeError(ctx, "term", fasthttp.StatusBadRequest)
+		return
+	}
+	term := cast.ByteArrayToString(termByte)
+
+	startDateByte := ctx.QueryArgs().Peek("startDate")
+	if startDateByte == nil {
+		writeError(ctx, "startDateByte", fasthttp.StatusBadRequest)
+		return
+	}
+	startDate := cast.ByteArrayToString(startDateByte)
+	if !isValidDate(startDate) {
+		writeError(ctx, "'startDate' must be in the format YYYY-MM-DD", fasthttp.StatusBadRequest)
+		return
+	}
+
+	endDateByte := ctx.QueryArgs().Peek("endDate")
+	if endDateByte == nil {
+		writeError(ctx, "endDate", fasthttp.StatusBadRequest)
+		return
+	}
+	endDate := cast.ByteArrayToString(endDateByte)
+	if !isValidDate(endDate) {
+		writeError(ctx, "'endDate' must be in the format YYYY-MM-DD", fasthttp.StatusBadRequest)
+		return
+	}
+
+	resp, err := h.accountingClient.GenerateAttendanceReport(term, startDate, endDate)
+	if err != nil {
+		writeError(ctx, err.Error(), fasthttp.StatusInternalServerError)
+		return
+	}
+
+	writeObject(ctx, resp, fasthttp.StatusOK)
+}
+
+func isValidDate(dateStr string) bool {
+	_, err := time.Parse("2006-01-02", dateStr)
+	return err == nil
 }

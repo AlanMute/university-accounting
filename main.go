@@ -1,35 +1,57 @@
-package university_accounting
+package main
 
 import (
 	"context"
 	"database/sql"
+	"github.com/AlanMute/university-accounting/internal/accounting"
+	"github.com/AlanMute/university-accounting/internal/endpoint"
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/go-redis/redis/v8"
+	_ "github.com/lib/pq"
 	"github.com/neo4j/neo4j-go-driver/v4/neo4j"
 	"github.com/sirupsen/logrus"
+	"github.com/valyala/fasthttp"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"log"
+	"os"
+	"os/signal"
 	"time"
 )
 
 var (
-	redisClient *redis.Client
-	mongoClient *mongo.Client
-	neoClient   neo4j.Driver
-	pgdbClient  *sql.DB
-	esClient    *elasticsearch.Client
-	ctx         = context.Background()
+	httpHandler      *endpoint.HttpHandler
+	redisClient      *redis.Client
+	mongoClient      *mongo.Client
+	neoClient        neo4j.Driver
+	pgdbClient       *sql.DB
+	esClient         *elasticsearch.Client
+	ctx              = context.Background()
+	accountingClient *accounting.Client
 )
 
 func main() {
 	setupDbs()
+	setupAccountingClient()
+
+	httpHandler = endpoint.NewHttpHandler(accountingClient)
+	go func() {
+		logrus.Info("Server was started")
+		err := fasthttp.ListenAndServe("0.0.0.0:8000", httpHandler.Handle)
+		if err != nil {
+			logrus.Warn(err.Error())
+		}
+	}()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+	<-sigChan
+
 	closeAll()
 }
 
 func setupDbs() {
 	var err error
-
 	// Redis
 	redisClient = redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
@@ -62,7 +84,7 @@ func setupDbs() {
 	logrus.Info("Connected to Neo4j!")
 
 	// PostgreSQL
-	pgdbClient, err = sql.Open("postgres", "user=postgres password=password dbname=yourdb sslmode=disable")
+	pgdbClient, err = sql.Open("postgres", "user=admin password=password123 dbname=mydb sslmode=disable")
 	if err != nil {
 		logrus.Fatalf("Failed to connect to PostgreSQL: %v", err)
 	}
@@ -84,10 +106,13 @@ func setupDbs() {
 	logrus.Info("Connected to ElasticSearch!")
 }
 
+func setupAccountingClient() {
+	accountingClient = accounting.NewClient(redisClient, mongoClient, neoClient, pgdbClient, esClient)
+}
+
 func closeAll() {
 	_ = redisClient.Close()
 	_ = mongoClient.Disconnect(ctx)
 	_ = neoClient.Close()
 	_ = pgdbClient.Close()
-	logrus.Info("All connections closed!")
 }
