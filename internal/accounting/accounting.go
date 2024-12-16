@@ -194,3 +194,163 @@ func mustJSON(v interface{}) string {
 	data, _ := json.Marshal(v)
 	return string(data)
 }
+
+type CourseReport struct {
+	DisciplineName        string        `json:"discipline_name"`
+	DisciplineDescription string        `json:"discipline_description"`
+	Lectures              []LectureInfo `json:"lectures"`
+}
+
+type LectureInfo struct {
+	Topic          string   `json:"topic"`
+	Type           string   `json:"type"`
+	Date           string   `json:"date"`
+	StudentCount   int      `json:"student_count"`
+	TechEquipments []string `json:"tech_equipments"`
+}
+
+func (c *Client) GenerateCourseReport(year, semester int) ([]CourseReport, error) {
+	var reports []CourseReport = make([]CourseReport, 0)
+	var startDate, endDate string
+	if semester == 1 {
+		startDate = fmt.Sprintf("%d-09-01", year)
+		endDate = fmt.Sprintf("%d-12-31", year)
+	} else {
+		startDate = fmt.Sprintf("%d-03-01", year+1)
+		endDate = fmt.Sprintf("%d-08-31", year+1)
+	}
+
+	disciplineIDs, err := c.getDisciplinesForDateRange(startDate, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get disciplines: %v", err)
+	}
+
+	if len(disciplineIDs) == 0 {
+		return reports, nil
+	}
+
+	disciplineData, err := c.getDisciplinesFromElastic(disciplineIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get discipline details: %v", err)
+	}
+
+	for _, discipline := range disciplineData {
+		disciplineID := discipline["discipline_id"].(string)
+
+		lectures, err := c.getLecturesWithDetails(disciplineID, startDate, endDate)
+
+		if err != nil {
+			return nil, fmt.Errorf("failed to get lectures for discipline %d: %v", disciplineID, err)
+		}
+
+		reports = append(reports, CourseReport{
+			DisciplineName:        discipline["name"].(string),
+			DisciplineDescription: discipline["description"].(string),
+			Lectures:              lectures,
+		})
+	}
+
+	return reports, nil
+}
+
+func (c *Client) getDisciplinesForDateRange(startDate, endDate string) ([]int, error) {
+	rows, err := c.pgdbClient.Query(getDisciplinesForDateQuery, startDate, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query disciplines: %v", err)
+	}
+	defer rows.Close()
+
+	var disciplineIDs []int
+	for rows.Next() {
+		var disciplineID int
+		if err := rows.Scan(&disciplineID); err != nil {
+			return nil, fmt.Errorf("failed to scan discipline_id: %v", err)
+		}
+		disciplineIDs = append(disciplineIDs, disciplineID)
+	}
+
+	return disciplineIDs, nil
+}
+
+var (
+	typeToStringLesson = map[int]string{
+		1: "Лекция",
+		2: "Практика",
+		3: "Лабораторная",
+	}
+)
+
+func (c *Client) getDisciplinesFromElastic(disciplineIDs []int) ([]map[string]interface{}, error) {
+	query := map[string]interface{}{
+		"query": map[string]interface{}{
+			"terms": map[string]interface{}{
+				"discipline_id": disciplineIDs,
+			},
+		},
+	}
+
+	var result map[string]interface{}
+
+	res, err := c.esClient.Search(
+		c.esClient.Search.WithIndex("disciplines"),
+		c.esClient.Search.WithBody(strings.NewReader(mustJSON(query))),
+		c.esClient.Search.WithPretty(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search disciplines: %v", err)
+	}
+	defer res.Body.Close()
+
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode ElasticSearch response: %v", err)
+	}
+
+	hits := result["hits"].(map[string]interface{})["hits"].([]interface{})
+	if len(hits) == 0 {
+		return nil, fmt.Errorf("no disciplines found")
+	}
+
+	var disciplines []map[string]interface{}
+	for _, hit := range hits {
+		source := hit.(map[string]interface{})["_source"].(map[string]interface{})
+		disciplines = append(disciplines, source)
+	}
+
+	return disciplines, nil
+}
+
+func (c *Client) getLecturesWithDetails(disciplineID, startDate, endDate string) ([]LectureInfo, error) {
+	rows, err := c.pgdbClient.Query(getLecturesWithDetailsQuery, disciplineID, startDate, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query lectures: %v", err)
+	}
+	defer rows.Close()
+
+	var lectures []LectureInfo
+	for rows.Next() {
+		var lecture LectureInfo
+		var typeLecture int
+		var techEquipments []sql.NullString
+
+		if err := rows.Scan(&lecture.Topic, &typeLecture, &lecture.Date, &lecture.StudentCount, pq.Array(&techEquipments)); err != nil {
+			return nil, fmt.Errorf("failed to scan lecture row: %v", err)
+		}
+
+		equipmentsSet := make(map[string]struct{})
+		for _, eq := range techEquipments {
+			if eq.Valid {
+				equipmentsSet[eq.String] = struct{}{}
+			}
+		}
+
+		for equipment := range equipmentsSet {
+			lecture.TechEquipments = append(lecture.TechEquipments, equipment)
+		}
+
+		lecture.Type = typeToStringLesson[typeLecture]
+
+		lectures = append(lectures, lecture)
+	}
+
+	return lectures, nil
+}

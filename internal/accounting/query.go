@@ -14,4 +14,25 @@ const (
 		ORDER BY attendance_rate ASC
 		LIMIT 10;
 	`
+
+	getDisciplinesForDateQuery = `
+		SELECT DISTINCT l.discipline_id
+		FROM lesson l
+		JOIN schedule sch ON l.lesson_id = sch.lesson_id
+		WHERE sch.date BETWEEN $1 AND $2;
+	`
+
+	getLecturesWithDetailsQuery = `
+		SELECT l.topic, l.type, sch.date, 
+		       COUNT(a.student_id) AS student_count,
+		       array_agg(e.name) AS tech_equipments
+		FROM lesson l
+		JOIN schedule sch ON l.lesson_id = sch.lesson_id
+		LEFT JOIN attendance a ON sch.schedule_id = a.schedule_id
+		LEFT JOIN equipment_requirements er ON l.lesson_id = er.lesson_id
+		LEFT JOIN equipment e ON er.equipment = e.id
+		WHERE l.discipline_id = $1 AND sch.date BETWEEN $2 AND $3
+		GROUP BY l.lesson_id, sch.date
+		ORDER BY sch.date;
+	`
 )

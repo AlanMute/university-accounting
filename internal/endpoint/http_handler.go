@@ -32,6 +32,14 @@ var routingMap = map[string]route{
 			ctx.SetStatusCode(fasthttp.StatusMethodNotAllowed)
 		}
 	}},
+
+	"/api/v1/course-report": {handler: func(ctx *fasthttp.RequestCtx, h *HttpHandler) { //Lab1
+		if cast.ByteArrayToString(ctx.Method()) == fasthttp.MethodGet {
+			h.generateCourseReport(ctx)
+		} else {
+			ctx.SetStatusCode(fasthttp.StatusMethodNotAllowed)
+		}
+	}},
 }
 
 type HttpHandler struct {
@@ -93,6 +101,28 @@ func (h *HttpHandler) generateAttendanceReport(ctx *fasthttp.RequestCtx) {
 	}
 
 	resp, err := h.accountingClient.GenerateAttendanceReport(term, startDate, endDate)
+	if err != nil {
+		writeError(ctx, err.Error(), fasthttp.StatusInternalServerError)
+		return
+	}
+
+	writeObject(ctx, resp, fasthttp.StatusOK)
+}
+
+func (h *HttpHandler) generateCourseReport(ctx *fasthttp.RequestCtx) {
+	year, err := ctx.QueryArgs().GetUint("year")
+	if err != nil {
+		writeError(ctx, "year", fasthttp.StatusBadRequest)
+		return
+	}
+
+	semester, err := ctx.QueryArgs().GetUint("sem")
+	if err != nil {
+		writeError(ctx, "sem", fasthttp.StatusBadRequest)
+		return
+	}
+
+	resp, err := h.accountingClient.GenerateCourseReport(year, semester)
 	if err != nil {
 		writeError(ctx, err.Error(), fasthttp.StatusInternalServerError)
 		return
