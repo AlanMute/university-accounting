@@ -33,9 +33,25 @@ var routingMap = map[string]route{
 		}
 	}},
 
-	"/api/v1/course-report": {handler: func(ctx *fasthttp.RequestCtx, h *HttpHandler) { //Lab1
+	"/api/v1/course-report": {handler: func(ctx *fasthttp.RequestCtx, h *HttpHandler) { //Lab2
 		if cast.ByteArrayToString(ctx.Method()) == fasthttp.MethodGet {
 			h.generateCourseReport(ctx)
+		} else {
+			ctx.SetStatusCode(fasthttp.StatusMethodNotAllowed)
+		}
+	}},
+
+	"/api/v1/group-report": {handler: func(ctx *fasthttp.RequestCtx, h *HttpHandler) { //Lab3
+		if cast.ByteArrayToString(ctx.Method()) == fasthttp.MethodGet {
+			h.generateGroupReport(ctx)
+		} else {
+			ctx.SetStatusCode(fasthttp.StatusMethodNotAllowed)
+		}
+	}},
+
+	"/api/v1/groups": {handler: func(ctx *fasthttp.RequestCtx, h *HttpHandler) { //Lab3
+		if cast.ByteArrayToString(ctx.Method()) == fasthttp.MethodGet {
+			h.getGroups(ctx)
 		} else {
 			ctx.SetStatusCode(fasthttp.StatusMethodNotAllowed)
 		}
@@ -123,6 +139,33 @@ func (h *HttpHandler) generateCourseReport(ctx *fasthttp.RequestCtx) {
 	}
 
 	resp, err := h.accountingClient.GenerateCourseReport(year, semester)
+	if err != nil {
+		writeError(ctx, err.Error(), fasthttp.StatusInternalServerError)
+		return
+	}
+
+	writeObject(ctx, resp, fasthttp.StatusOK)
+}
+
+func (h *HttpHandler) generateGroupReport(ctx *fasthttp.RequestCtx) {
+	groupByte := ctx.QueryArgs().Peek("group")
+	if groupByte == nil {
+		writeError(ctx, "group", fasthttp.StatusBadRequest)
+		return
+	}
+	group := cast.ByteArrayToString(groupByte)
+
+	resp, err := h.accountingClient.GenerateGroupReport(group)
+	if err != nil {
+		writeError(ctx, err.Error(), fasthttp.StatusInternalServerError)
+		return
+	}
+
+	writeObject(ctx, resp, fasthttp.StatusOK)
+}
+
+func (h *HttpHandler) getGroups(ctx *fasthttp.RequestCtx) {
+	resp, err := h.accountingClient.GetAllGroups()
 	if err != nil {
 		writeError(ctx, err.Error(), fasthttp.StatusInternalServerError)
 		return

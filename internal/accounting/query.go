@@ -35,4 +35,39 @@ const (
 		GROUP BY l.lesson_id, sch.date
 		ORDER BY sch.date;
 	`
+
+	getSpecialDisciplinesQuery = `
+		SELECT DISTINCT c.discipline_id
+		FROM course c
+		JOIN lesson l ON c.discipline_id = l.discipline_id
+		JOIN schedule sch ON l.lesson_id = sch.lesson_id
+		WHERE c.is_special = true AND sch.group_id = $1;
+	`
+
+	getGroupAndStudentsByNameQuery = `
+		SELECT g.group_id, s.card_id
+		FROM "group" g
+		JOIN student s ON g.group_id = s.group_id
+		WHERE g.name = $1;
+	`
+
+	plannedQuery = `
+		SELECT COUNT(*) * 2 AS planned_hours
+		FROM schedule sch
+		JOIN lesson l ON sch.lesson_id = l.lesson_id
+		WHERE l.discipline_id = $1 AND sch.group_id = $2;
+	`
+
+	attendedQuery = `
+		SELECT COUNT(*) * 2 AS attended_hours
+		FROM attendance a
+		JOIN schedule sch ON a.schedule_id = sch.schedule_id
+		JOIN lesson l ON sch.lesson_id = l.lesson_id
+		WHERE l.discipline_id = $1 AND sch.group_id = $2
+		  AND a.status = true AND a.student_id = (
+			SELECT student_id FROM student WHERE card_id = $3
+		  );
+	`
+
+	getAllGroupsQuery = "SELECT name FROM \"group\""
 )

@@ -354,3 +354,194 @@ func (c *Client) getLecturesWithDetails(disciplineID, startDate, endDate string)
 
 	return lectures, nil
 }
+
+type GroupReport struct {
+	GroupName string        `json:"group_name"`
+	Students  []StudentInfo `json:"students"`
+}
+
+type StudentInfo struct {
+	StudentID   string             `json:"student_id"`
+	Name        string             `json:"name"`
+	Group       string             `json:"group"`
+	Course      int                `json:"course"`
+	Email       string             `json:"email"`
+	Birth       string             `json:"birth"`
+	Disciplines []DisciplineReport `json:"disciplines"`
+}
+
+type DisciplineReport struct {
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	PlannedHours  int    `json:"planned_hours"`
+	AttendedHours int    `json:"attended_hours"`
+}
+
+func (c *Client) GenerateGroupReport(groupName string) (*GroupReport, error) {
+	groupID, studentIDs, err := c.getGroupAndStudentsByName(groupName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get group and students: %v", err)
+	}
+
+	students, err := c.getStudentsInfoFromRedis(studentIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get students info from Redis: %v", err)
+	}
+
+	disciplineIDs, err := c.getSpecialDisciplinesForGroup(groupID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get special disciplines: %v", err)
+	}
+
+	for i, student := range students {
+		for _, disciplineID := range disciplineIDs {
+			discipline, err := c.getDisciplineFromElastic(disciplineID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get discipline description: %v", err)
+			}
+
+			plannedHours, attendedHours, err := c.calculateHours(groupID, student.StudentID, disciplineID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to calculate hours: %v", err)
+			}
+
+			student.Disciplines = append(student.Disciplines, DisciplineReport{
+				Name:          discipline["name"].(string),
+				Description:   discipline["description"].(string),
+				PlannedHours:  plannedHours,
+				AttendedHours: attendedHours,
+			})
+		}
+		students[i] = student
+	}
+
+	return &GroupReport{
+		GroupName: groupName,
+		Students:  students,
+	}, nil
+}
+
+func (c *Client) getSpecialDisciplinesForGroup(groupID int) ([]int, error) {
+	rows, err := c.pgdbClient.Query(getSpecialDisciplinesQuery, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query special disciplines: %v", err)
+	}
+	defer rows.Close()
+
+	var disciplineIDs []int
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("failed to scan discipline_id: %v", err)
+		}
+		disciplineIDs = append(disciplineIDs, id)
+	}
+
+	return disciplineIDs, nil
+}
+
+func (c *Client) getStudentsInfoFromRedis(studentIDs []string) ([]StudentInfo, error) {
+	var students []StudentInfo
+
+	for _, studentID := range studentIDs {
+		key := fmt.Sprintf("student:%s", studentID)
+		data, err := c.redisClient.Get(context.Background(), key).Result()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get student data for %s: %v", studentID, err)
+		}
+
+		var student StudentInfo
+		if err := json.Unmarshal([]byte(data), &student); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal student data: %v", err)
+		}
+
+		students = append(students, student)
+	}
+
+	return students, nil
+}
+
+func (c *Client) getGroupAndStudentsByName(groupName string) (int, []string, error) {
+	rows, err := c.pgdbClient.Query(getGroupAndStudentsByNameQuery, groupName)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to query group and students: %v", err)
+	}
+	defer rows.Close()
+
+	var groupID int
+	var studentIDs []string
+	for rows.Next() {
+		var cardID string
+		if err := rows.Scan(&groupID, &cardID); err != nil {
+			return 0, nil, fmt.Errorf("failed to scan row: %v", err)
+		}
+		studentIDs = append(studentIDs, cardID)
+	}
+
+	return groupID, studentIDs, nil
+}
+
+func (c *Client) getDisciplineFromElastic(disciplineID int) (map[string]interface{}, error) {
+	query := map[string]interface{}{
+		"query": map[string]interface{}{
+			"term": map[string]interface{}{
+				"discipline_id": disciplineID,
+			},
+		},
+	}
+
+	var result map[string]interface{}
+	res, err := c.esClient.Search(
+		c.esClient.Search.WithIndex("disciplines"),
+		c.esClient.Search.WithBody(strings.NewReader(mustJSON(query))),
+		c.esClient.Search.WithPretty(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search discipline: %v", err)
+	}
+	defer res.Body.Close()
+
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %v", err)
+	}
+
+	hits := result["hits"].(map[string]interface{})["hits"].([]interface{})
+	if len(hits) == 0 {
+		return nil, fmt.Errorf("discipline not found")
+	}
+
+	return hits[0].(map[string]interface{})["_source"].(map[string]interface{}), nil
+}
+
+func (c *Client) calculateHours(groupID int, studentID string, disciplineID int) (int, int, error) {
+	var plannedHours, attendedHours int
+
+	if err := c.pgdbClient.QueryRow(plannedQuery, disciplineID, groupID).Scan(&plannedHours); err != nil {
+		return 0, 0, fmt.Errorf("failed to get planned hours: %v", err)
+	}
+
+	if err := c.pgdbClient.QueryRow(attendedQuery, disciplineID, groupID, studentID).Scan(&attendedHours); err != nil {
+		return 0, 0, fmt.Errorf("failed to get attended hours: %v", err)
+	}
+
+	return plannedHours, attendedHours, nil
+}
+
+func (c *Client) GetAllGroups() ([]string, error) {
+	rows, err := c.pgdbClient.Query(getAllGroupsQuery)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query group and students: %v", err)
+	}
+	defer rows.Close()
+
+	var groups []string
+	for rows.Next() {
+		var group string
+		if err := rows.Scan(&group); err != nil {
+			return nil, fmt.Errorf("failed to scan row: %v", err)
+		}
+		groups = append(groups, group)
+	}
+
+	return groups, nil
+}
